@@ -107,7 +107,10 @@ class TimeFreqPanel(QWidget):
         self.wavelet_box = QGroupBox("Wavelet Parameters")
         wav_lay = QFormLayout(self.wavelet_box)
         self.wav_family_combo = QComboBox()
-        self.wav_family_combo.addItems(["morl", "cmor", "mexh", "cgau"])
+        self.wav_family_combo.addItems([
+            "morl", "cmor1.5-1.0", "cmor3.0-1.0",
+            "mexh", "cgau1", "cgau2", "cgau3", "cgau4", "cgau5", "cgau6", "cgau7", "cgau8",
+        ])
         self.wav_family_combo.currentIndexChanged.connect(self._recompute)
         wav_lay.addRow("Wavelet:", self.wav_family_combo)
 
@@ -193,7 +196,8 @@ class TimeFreqPanel(QWidget):
             self.t_start_spin.setMaximum(duration)
             self.t_end_spin.setMaximum(duration)
             self.t_start_spin.setValue(0.0)
-            self.t_end_spin.setValue(duration)
+            max_init = min(30.0, duration)
+            self.t_end_spin.setValue(max_init)
         self.ch_combo.blockSignals(False)
         self._recompute()
 
@@ -237,12 +241,8 @@ class TimeFreqPanel(QWidget):
         nperseg = int(self.win_size_combo.currentText())
         noverlap = int(nperseg * self.overlap_spin.value() / 100.0)
         win_name = self.win_func_combo.currentText().lower()
-        if win_name == "hanning":
-            window = "hann"
-        elif win_name == "hamming":
-            window = "hamm"
-        else:
-            window = "blackman"
+        win_map = {"hanning": "hann", "hamming": "hamming", "blackman": "blackman"}
+        window = win_map.get(win_name, "hann")
 
         freqs, times, Zxx = stft(signal, fs=fs, window=window, nperseg=nperseg, noverlap=noverlap)
         power = np.abs(Zxx) ** 2
@@ -267,7 +267,13 @@ class TimeFreqPanel(QWidget):
             return
         scales = np.arange(smin, smax + 1)
 
-        coeffs, freqs = pywt.cwt(signal, scales, wavelet, 1.0 / fs)
+        try:
+            coeffs, freqs = pywt.cwt(signal, scales, wavelet, 1.0 / fs)
+        except Exception as e:
+            self.ax.text(0.5, 0.5, f"Wavelet error: {e}", transform=self.ax.transAxes,
+                         ha="center", va="center", color="#f38ba8", fontsize=11)
+            return
+
         power = np.abs(coeffs) ** 2
         power_db = 10.0 * np.log10(power + 1e-12)
         duration = len(signal) / fs
@@ -282,6 +288,34 @@ class TimeFreqPanel(QWidget):
         self._cbar.ax.yaxis.set_tick_params(color="#cdd6f4")
         for label in self._cbar.ax.get_yticklabels():
             label.set_color("#cdd6f4")
+
+    def export_csv_data(self):
+        if self.audio_data is None:
+            raise ValueError("No data loaded")
+        ax = self.ax
+        if not ax.collections:
+            raise ValueError("No time-frequency data computed yet")
+        pcm = ax.collections[0]
+        data = pcm.get_array()
+        if data is None:
+            raise ValueError("No data in plot")
+        x_edges = pcm.get_coordinates()[:, 0]
+        y_edges = pcm.get_coordinates()[:, 1]
+        times = np.unique(x_edges)
+        freqs = np.unique(y_edges)
+        nt = len(times) - 1
+        nf = len(freqs) - 1
+        if nt < 1 or nf < 1:
+            raise ValueError("Insufficient data")
+        power_db = data[:nt * nf].reshape(nf, nt)
+        t_centers = (times[:-1] + times[1:]) / 2.0
+        f_centers = (freqs[:-1] + freqs[1:]) / 2.0
+        t_col = np.repeat(t_centers, nf)
+        f_col = np.tile(f_centers, nt)
+        p_col = power_db.flatten()
+        headers = ["Time(s)", "Frequency(Hz)", "Power(dB)"]
+        arrays = [t_col, f_col, p_col]
+        return arrays, headers
 
     def get_figure(self):
         return self.figure

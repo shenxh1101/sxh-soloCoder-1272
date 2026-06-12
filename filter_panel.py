@@ -211,7 +211,6 @@ class FilterPanel(QWidget):
 
     def _design_filter(self):
         fs = self._audio_data.sample_rate
-        nyq = fs / 2.0
         ftype = self.filter_type_combo.currentIndex()
         method = self.method_combo.currentIndex()
         order = self.order_spin.value()
@@ -221,8 +220,6 @@ class FilterPanel(QWidget):
         btype_map = {0: "lowpass", 1: "highpass", 2: "bandpass", 3: "bandstop"}
         btype = btype_map[ftype]
         is_band = ftype >= 2
-
-        Wn = np.array([fc1, fc2]) / nyq if is_band else fc1 / nyq
 
         if method == 0:
             window_name = self.window_combo.currentText().lower()
@@ -238,19 +235,21 @@ class FilterPanel(QWidget):
                 b = sig.firwin(numtaps, fc1, pass_zero=(btype == "highpass"), fs=fs, window=window)
             a = np.array([1.0])
             return b, a, True
-        elif method == 1:
-            b, a = sig.butter(order, Wn, btype=btype, fs=fs)
-        elif method == 2:
-            rp = self.ripple_spin.value()
-            b, a = sig.cheby1(order, rp, Wn, btype=btype, fs=fs)
-        elif method == 3:
-            rs = self.rs_spin.value()
-            b, a = sig.cheby2(order, rs, Wn, btype=btype, fs=fs)
-        elif method == 4:
-            rp = self.ripple_spin.value()
-            rs = self.rs_spin.value()
-            b, a = sig.ellip(order, rp, rs, Wn, btype=btype, fs=fs)
-        return b, a, False
+        else:
+            Wn = np.array([fc1, fc2]) if is_band else fc1
+            if method == 1:
+                b, a = sig.butter(order, Wn, btype=btype, fs=fs)
+            elif method == 2:
+                rp = self.ripple_spin.value()
+                b, a = sig.cheby1(order, rp, Wn, btype=btype, fs=fs)
+            elif method == 3:
+                rs = self.rs_spin.value()
+                b, a = sig.cheby2(order, rs, Wn, btype=btype, fs=fs)
+            elif method == 4:
+                rp = self.ripple_spin.value()
+                rs = self.rs_spin.value()
+                b, a = sig.ellip(order, rp, rs, Wn, btype=btype, fs=fs)
+            return b, a, False
 
     def _update_preview(self):
         if self._audio_data is None:
@@ -289,26 +288,25 @@ class FilterPanel(QWidget):
 
         ch_idx = self.channel_combo.currentIndex()
         x = self._audio_data.get_channel(ch_idx)
+
+        max_display = int(fs * 5)
+        if len(x) > max_display:
+            x = x[:max_display]
         t = np.arange(len(x)) / fs
+
+        if self._filtered_signal is not None:
+            f_display = self._filtered_signal[:max_display] if len(self._filtered_signal) > max_display else self._filtered_signal
+        else:
+            f_display = None
 
         self.ax_time.clear()
         self.ax_time.set_facecolor("#1e1e1e")
 
-        max_pts = 10000
-        if len(t) > max_pts:
-            step = len(t) // max_pts
-            t_d = t[::step]
-            x_d = x[::step]
-            self.ax_time.plot(t_d, x_d, color="#888888", linewidth=0.5, alpha=0.6, label="Original")
-            if self._filtered_signal is not None:
-                f_d = self._filtered_signal[::step]
-                self.ax_time.plot(t_d, f_d, color="#00ff88", linewidth=0.7, label="Filtered")
-        else:
-            self.ax_time.plot(t, x, color="#888888", linewidth=0.5, alpha=0.6, label="Original")
-            if self._filtered_signal is not None:
-                self.ax_time.plot(t, self._filtered_signal, color="#00ff88", linewidth=0.7, label="Filtered")
+        self.ax_time.plot(t, x, color="#888888", linewidth=0.5, alpha=0.6, label="Original")
+        if f_display is not None:
+            self.ax_time.plot(t, f_display, color="#00ff88", linewidth=0.7, label="Filtered")
 
-        if self._filtered_signal is not None:
+        if f_display is not None:
             self.ax_time.legend(facecolor="#2b2b2b", edgecolor="#555555", labelcolor="#cccccc", fontsize=8)
         self.ax_time.set_title("Signal Comparison", color="#cccccc")
         self.ax_time.set_xlabel("Time (s)", color="#cccccc")

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QStatusBar, QToolBar, QLabel, QWidget, QVBoxLayout,
 )
 from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from audio_engine import AudioData, AudioFileLoader, MicrophoneRecorder
 from waveform_panel import WaveformPanel
@@ -116,6 +116,9 @@ class MainWindow(QMainWindow):
         self._audio_data = None
         self._file_loader = None
         self._mic_recorder = None
+        self._live_preview_timer = QTimer(self)
+        self._live_preview_timer.setInterval(200)
+        self._live_preview_timer.timeout.connect(self._on_live_preview_tick)
         self._setup_ui()
         self._setup_menu()
         self._setup_toolbar()
@@ -274,9 +277,10 @@ class MainWindow(QMainWindow):
             self._start_recording()
 
     def _start_recording(self):
-        self._mic_recorder = MicrophoneRecorder(sample_rate=44100, channels=2)
+        self._mic_recorder = MicrophoneRecorder(sample_rate=44100, channels=2, blocksize=4096)
         try:
             self._mic_recorder.start()
+            self._live_preview_timer.start()
             self._rec_btn.setText("⏹ Stop")
             self._record_action.setText("⏹ Stop &Recording")
             self._statusbar.showMessage("Recording… Click Stop to finish.")
@@ -284,7 +288,36 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Recording Error", f"Could not start recording:\n{e}")
             self._mic_recorder = None
 
+    def _on_live_preview_tick(self):
+        if self._mic_recorder is None or not self._mic_recorder.is_recording:
+            return
+        chunk_data = self._mic_recorder.get_accumulated_chunks()
+        if chunk_data is None:
+            return
+        if chunk_data.ndim == 1:
+            chunk_data = chunk_data.reshape(-1, 1)
+        num_ch = chunk_data.shape[1]
+        ch_names = [f"Channel {i+1}" for i in range(num_ch)]
+        if num_ch >= 2:
+            ch_names[0] = "Left"
+            ch_names[1] = "Right"
+
+        if self._audio_data is not None and self._audio_data.filename == "Microphone Recording":
+            new_signal = np.concatenate([self._audio_data.signal, chunk_data], axis=0)
+        else:
+            new_signal = chunk_data
+
+        live_audio = AudioData(
+            signal=new_signal, sample_rate=self._mic_recorder.sample_rate,
+            channel_names=ch_names, filename="Microphone Recording"
+        )
+        self._audio_data = live_audio
+        self._waveform_panel.set_data(live_audio)
+        self._spectrum_panel.set_data(live_audio)
+        self._statusbar.showMessage(f"Recording… {live_audio.duration:.1f} s")
+
     def _stop_recording(self):
+        self._live_preview_timer.stop()
         if self._mic_recorder is None:
             return
         audio_data = self._mic_recorder.stop()
@@ -326,17 +359,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export Error", f"Failed to export:\n{e}")
 
     def _on_export_csv(self):
-        if self._audio_data is None:
-            QMessageBox.warning(self, "Export CSV", "No audio data loaded.")
-            return
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "Export CSV", "", "CSV Files (*.csv);;All Files (*)"
-        )
-        if not filepath:
-            return
-        if not filepath.lower().endswith(".csv"):
-            filepath += ".csv"
-        try:
+        panel = self._get_current_panel()
+        if hasattr(panel, 'export_csv_data'):
+            try:
+                arrays, headers = panel.export_csv_data()
+            except Exception as e:
+                QMessageBox.warning(self, "Export CSV", f"Could not extract data:\n{e}")
+                return
+        elif self._audio_data is not None:
             headers = ["Time(s)"]
             arrays = [self._audio_data.time_array]
             for ch in range(self._audio_data.num_channels):
@@ -347,6 +377,18 @@ class MainWindow(QMainWindow):
                 )
                 headers.append(name)
                 arrays.append(self._audio_data.get_channel(ch))
+        else:
+            QMessageBox.warning(self, "Export CSV", "No data to export.")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export CSV", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        if not filepath:
+            return
+        if not filepath.lower().endswith(".csv"):
+            filepath += ".csv"
+        try:
             export_data_to_csv(filepath, *arrays, headers=headers)
             self._statusbar.showMessage(f"CSV exported: {filepath}")
         except Exception as e:
@@ -364,4 +406,5 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._mic_recorder is not None and self._mic_recorder.is_recording:
             self._mic_recorder.stop()
+        self._live_preview_timer.stop()
         event.accept()

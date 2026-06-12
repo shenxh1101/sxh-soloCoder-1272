@@ -271,5 +271,31 @@ class AnalysisPanel(QWidget):
         ax.grid(True, color="#333", linewidth=0.5, alpha=0.5, axis="y")
         self._style_axes()
 
+    def export_csv_data(self):
+        if self.audio_data is None:
+            raise ValueError("No data loaded")
+        headers = ["Peak#", "Frequency(Hz)", "Magnitude(dB)", "THD%", "THD+N%"]
+        peak_count = self.peak_table.rowCount()
+        peak_nums = np.arange(1, peak_count + 1, dtype=float)
+        freqs_arr = np.zeros(peak_count)
+        mags_arr = np.zeros(peak_count)
+        for i in range(peak_count):
+            freq_item = self.peak_table.item(i, 1)
+            mag_item = self.peak_table.item(i, 2)
+            freqs_arr[i] = float(freq_item.text()) if freq_item else 0.0
+            mags_arr[i] = float(mag_item.text()) if mag_item else 0.0
+        thd_text = self.thd_label.text().replace("THD: ", "").replace("%", "")
+        thdn_text = self.thdn_label.text().replace("THD+N: ", "").replace("%", "")
+        max_len = max(peak_count, 1)
+        thd_val = float(thd_text) if thd_text not in ("—", "") else 0.0
+        thdn_val = float(thdn_text) if thdn_text not in ("—", "") else 0.0
+        thd_col = np.full(max_len, thd_val)
+        thdn_col = np.full(max_len, thdn_val)
+        peak_nums = np.pad(peak_nums, (0, max_len - peak_count), constant_values=np.nan)
+        freqs_arr = np.pad(freqs_arr, (0, max_len - peak_count), constant_values=np.nan)
+        mags_arr = np.pad(mags_arr, (0, max_len - peak_count), constant_values=np.nan)
+        arrays = [peak_nums, freqs_arr, mags_arr, thd_col, thdn_col]
+        return arrays, headers
+
     def get_figure(self):
         return self.figure

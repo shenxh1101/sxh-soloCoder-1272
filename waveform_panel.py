@@ -114,6 +114,22 @@ class WaveformPanel(QWidget):
         if audio_data is not None:
             for i in range(audio_data.num_channels):
                 self._selected_channels.add(i)
+        self._plot_later()
+
+    def _plot_later(self):
+        if not hasattr(self, '_plot_timer'):
+            self._plot_timer = None
+        if self._plot_timer is not None:
+            self._plot_timer.stop()
+        from PyQt6.QtCore import QTimer
+        self._plot_timer = QTimer(self)
+        self._plot_timer.setSingleShot(True)
+        self._plot_timer.setInterval(50)
+        self._plot_timer.timeout.connect(self._do_plot)
+        self._plot_timer.start()
+
+    def _do_plot(self):
+        self._plot_timer = None
         self._plot()
 
     def _rebuild_channel_checkboxes(self):
@@ -240,17 +256,21 @@ class WaveformPanel(QWidget):
         data = self._audio_data.get_channel(ch)
         color = _CHANNEL_COLORS[ch % len(_CHANNEL_COLORS)]
         n_samples = len(data)
+        sr = self._audio_data.sample_rate
 
         if n_samples > _DECIMATION_THRESHOLD:
             display_pts = _DECIMATION_THRESHOLD // 2
-            indices, decimated = _decimate_minmax(data, display_pts)
-            time_base = self._audio_data.time_array
-            t = time_base[indices]
-            ax.fill_between(t, decimated[0::2], decimated[1::2], color=color, alpha=0.35, linewidth=0)
-            ax.plot(t[0::2], decimated[0::2], color=color, linewidth=0.5, alpha=0.6)
-            ax.plot(t[1::2], decimated[1::2], color=color, linewidth=0.5, alpha=0.6)
+            block_size = max(1, n_samples // display_pts)
+            n_blocks = n_samples // block_size
+            trimmed = data[:n_blocks * block_size].reshape(n_blocks, block_size)
+            mins = trimmed.min(axis=1)
+            maxs = trimmed.max(axis=1)
+            t = (np.arange(n_blocks) * block_size + block_size // 2) / sr
+            ax.fill_between(t, mins, maxs, color=color, alpha=0.35, linewidth=0)
+            ax.plot(t, mins, color=color, linewidth=0.5, alpha=0.6)
+            ax.plot(t, maxs, color=color, linewidth=0.5, alpha=0.6)
         else:
-            t = self._audio_data.time_array[:n_samples]
+            t = np.arange(n_samples) / sr
             ax.plot(t, data, color=color, linewidth=0.8)
 
     def _setup_span_selector(self, ax, key):

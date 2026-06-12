@@ -1,7 +1,7 @@
 import numpy as np
 import soundfile as sf
 import sounddevice as sd
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, QTimer
 
 
 class AudioData:
@@ -71,7 +71,7 @@ class MicrophoneRecorder(QObject):
     chunk_ready = pyqtSignal(np.ndarray, int)
     recording_stopped = pyqtSignal()
 
-    def __init__(self, sample_rate=44100, channels=1, blocksize=1024):
+    def __init__(self, sample_rate=44100, channels=1, blocksize=4096):
         super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
@@ -79,10 +79,12 @@ class MicrophoneRecorder(QObject):
         self._recording = False
         self._stream = None
         self._buffer = []
+        self._chunk_accumulator = []
 
     def start(self):
         self._recording = True
         self._buffer = []
+        self._chunk_accumulator = []
         try:
             self._stream = sd.InputStream(
                 samplerate=self.sample_rate,
@@ -99,7 +101,14 @@ class MicrophoneRecorder(QObject):
         if self._recording:
             chunk = indata.copy()
             self._buffer.append(chunk)
-            self.chunk_ready.emit(chunk, self.sample_rate)
+            self._chunk_accumulator.append(chunk)
+
+    def get_accumulated_chunks(self):
+        if not self._chunk_accumulator:
+            return None
+        data = np.concatenate(self._chunk_accumulator, axis=0)
+        self._chunk_accumulator = []
+        return data
 
     def stop(self):
         self._recording = False
