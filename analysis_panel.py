@@ -6,15 +6,20 @@ from PyQt6.QtWidgets import (
     QLabel, QComboBox, QDoubleSpinBox, QSpinBox,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from results_manager import AnalysisResult
 
 
 class AnalysisPanel(QWidget):
+    save_result_requested = pyqtSignal(dict, dict, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.audio_data = None
+        self._last_result = None
+        self._analysis_range = None
         self._build_ui()
         self._apply_style()
 
@@ -63,7 +68,17 @@ class AnalysisPanel(QWidget):
         self.analyze_btn = QPushButton("Analyze")
         self.analyze_btn.setFixedHeight(32)
         self.analyze_btn.clicked.connect(self._on_analyze)
-        controls.addWidget(self.analyze_btn, row, 2, 1, 2)
+        controls.addWidget(self.analyze_btn, row, 2, 1, 1)
+
+        self._save_btn = QPushButton("💾 Save")
+        self._save_btn.setFixedHeight(32)
+        self._save_btn.setStyleSheet("""
+            QPushButton { background-color: #555; color: white; border: none;
+            border-radius: 3px; padding: 4px 12px; }
+            QPushButton:hover { background-color: #666; }
+        """)
+        self._save_btn.clicked.connect(self._on_save_result)
+        controls.addWidget(self._save_btn, row, 3, 1, 1)
 
         row += 1
         self.thd_label = QLabel("THD: —")
@@ -126,10 +141,31 @@ class AnalysisPanel(QWidget):
 
     def set_data(self, audio_data):
         self.audio_data = audio_data
+        self._analysis_range = None
+        self._last_result = None
         self.channel_combo.clear()
         for i in range(audio_data.num_channels):
             name = audio_data.channel_names[i] if i < len(audio_data.channel_names) else f"Ch {i}"
             self.channel_combo.addItem(name)
+
+    def set_analysis_range(self, t0, t1):
+        if self.audio_data is None:
+            return
+        self._analysis_range = (t0, t1)
+        self._on_analyze()
+
+    def _get_range_signal(self, channel_idx):
+        if self.audio_data is None or channel_idx < 0:
+            return None
+        sig = self.audio_data.get_channel(channel_idx)
+        if self._analysis_range is None:
+            return sig
+        t0, t1 = self._analysis_range
+        i0 = int(t0 * self.audio_data.sample_rate)
+        i1 = int(t1 * self.audio_data.sample_rate)
+        i0 = max(0, min(i0, len(sig)))
+        i1 = max(i0 + 1, min(i1, len(sig)))
+        return sig[i0:i1]
 
     def _get_window(self, n):
         name = self.window_combo.currentText()
@@ -148,7 +184,10 @@ class AnalysisPanel(QWidget):
             return
 
         ch = self.channel_combo.currentIndex()
-        signal = self.audio_data.get_channel(ch).astype(np.float64)
+        signal = self._get_range_signal(ch)
+        if signal is None:
+            return
+        signal = signal.astype(np.float64)
         sr = self.audio_data.sample_rate
         n = len(signal)
 
@@ -173,6 +212,13 @@ class AnalysisPanel(QWidget):
         peak_indices, properties = find_peaks(
             spectrum_db, height=height, distance=distance, prominence=prominence
         )
+
+        self._last_result = {
+            "freqs": freqs,
+            "spectrum_db": spectrum_db,
+            "peak_indices": peak_indices,
+            "channel": self.channel_combo.currentText(),
+        }
 
         self._plot_spectrum(freqs, spectrum_db, peak_indices)
         self._fill_peak_table(freqs, spectrum_db, peak_indices)
@@ -270,6 +316,59 @@ class AnalysisPanel(QWidget):
         ax.set_title(f"THD Breakdown  (f₀ = {f0:.1f} Hz)")
         ax.grid(True, color="#333", linewidth=0.5, alpha=0.5, axis="y")
         self._style_axes()
+
+    def _on_save_result(self):
+        if self._last_result is None:
+            return
+        thd = self.thd_label.text().replace("THD: ", "")
+        thdn = self.thdn_label.text().replace("THD+N: ", "")
+        peaks = []
+        for i in range(self.peak_table.rowCount()):
+            freq_item = self.peak_table.item(i, 1)
+            mag_item = self.peak_table.item(i, 2)
+            if freq_item and mag_item:
+                peaks.append({
+                    "freq": float(freq_item.text()),
+                    "mag": float(mag_item.text()),
+                })
+        data = {
+            "freqs": self._last_result["freqs"],
+            "spectrum_db": self._last_result["spectrum_db"],
+            "peak_indices": self._last_result["peak_indices"],
+            "channel": self._last_result["channel"],
+            "peaks": peaks,
+            "thd": thd,
+            "thdn": thdn,
+        }
+        params = {
+            "window": self.window_combo.currentText(),
+            "height": self.height_spin.value(),
+            "distance": self.distance_spin.value(),
+            "prominence": self.prominence_spin.value(),
+            "range": str(self._analysis_range) if self._analysis_range else "full",
+        }
+        ch = self._last_result["channel"]
+        self.save_result_requested.emit(data, params, f"THD {ch}")
+
+    def restore_result(self, result: AnalysisResult):
+        d = result.data
+        freqs = np.array(d.get("freqs", []))
+        spectrum_db = np.array(d.get("spectrum_db", []))
+        peak_indices = np.array(d.get("peak_indices", [])).astype(int)
+        self._last_result = {
+            "freqs": freqs,
+            "spectrum_db": spectrum_db,
+            "peak_indices": peak_indices,
+            "channel": d.get("channel", ""),
+        }
+        self._plot_spectrum(freqs, spectrum_db, peak_indices)
+        self._fill_peak_table(freqs, spectrum_db, peak_indices)
+        thd = d.get("thd", "—")
+        thdn = d.get("thdn", "—")
+        self.thd_label.setText(f"THD: {thd}")
+        self.thdn_label.setText(f"THD+N: {thdn}")
+        self.figure.tight_layout(pad=2.0)
+        self.canvas.draw()
 
     def export_csv_data(self):
         if self.audio_data is None:

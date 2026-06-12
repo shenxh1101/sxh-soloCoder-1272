@@ -3,11 +3,12 @@ import pywt
 from scipy.signal import stft
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QSpinBox,
-    QDoubleSpinBox, QLabel, QFormLayout, QGroupBox, QSizePolicy,
+    QDoubleSpinBox, QLabel, QFormLayout, QGroupBox, QSizePolicy, QPushButton,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from results_manager import AnalysisResult
 
 
 DARK_STYLE = """
@@ -56,10 +57,14 @@ QLabel {
 
 
 class TimeFreqPanel(QWidget):
+    save_result_requested = pyqtSignal(dict, dict, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.audio_data = None
         self._cbar = None
+        self._last_result = None
+        self._analysis_range = None
         self.setStyleSheet(DARK_STYLE)
         self._build_ui()
 
@@ -151,6 +156,16 @@ class TimeFreqPanel(QWidget):
         ctrl_row.addWidget(range_box)
         ctrl_row.addStretch()
 
+        self._save_btn = QPushButton("💾 Save")
+        self._save_btn.setFixedHeight(24)
+        self._save_btn.setStyleSheet("""
+            QPushButton { background-color: #0e639c; color: white; border: none;
+            border-radius: 3px; padding: 4px 12px; font-size: 11px; }
+            QPushButton:hover { background-color: #1177bb; }
+        """)
+        self._save_btn.clicked.connect(self._on_save_result)
+        ctrl_row.addWidget(self._save_btn)
+
         self.figure = Figure(figsize=(8, 4), facecolor="#1e1e2e")
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -182,6 +197,7 @@ class TimeFreqPanel(QWidget):
 
     def set_data(self, audio_data):
         self.audio_data = audio_data
+        self._analysis_range = None
         self.ch_combo.blockSignals(True)
         self.ch_combo.clear()
         if audio_data is not None:
@@ -199,6 +215,18 @@ class TimeFreqPanel(QWidget):
             max_init = min(30.0, duration)
             self.t_end_spin.setValue(max_init)
         self.ch_combo.blockSignals(False)
+        self._recompute()
+
+    def set_analysis_range(self, t0, t1):
+        if self.audio_data is None:
+            return
+        self._analysis_range = (t0, t1)
+        self.t_start_spin.blockSignals(True)
+        self.t_end_spin.blockSignals(True)
+        self.t_start_spin.setValue(t0)
+        self.t_end_spin.setValue(t1)
+        self.t_start_spin.blockSignals(False)
+        self.t_end_spin.blockSignals(False)
         self._recompute()
 
     def _recompute(self):
@@ -249,6 +277,18 @@ class TimeFreqPanel(QWidget):
         power_db = 10.0 * np.log10(power + 1e-12)
         times = times + t_offset
 
+        self._last_result = {
+            "type": "stft",
+            "times": times.copy(),
+            "freqs": freqs.copy(),
+            "power_db": power_db.copy(),
+            "params": {
+                "nperseg": nperseg,
+                "noverlap": noverlap,
+                "window": window,
+            },
+        }
+
         pcm = self.ax.pcolormesh(times, freqs, power_db, shading="gouraud", cmap="viridis")
         self.ax.set_xlabel("Time (s)")
         self.ax.set_ylabel("Frequency (Hz)")
@@ -279,6 +319,17 @@ class TimeFreqPanel(QWidget):
         duration = len(signal) / fs
         times = np.linspace(t_offset, t_offset + duration, power_db.shape[1])
 
+        self._last_result = {
+            "type": "wavelet",
+            "times": times.copy(),
+            "freqs": freqs.copy(),
+            "power_db": power_db.copy(),
+            "params": {
+                "wavelet": wavelet,
+                "scales": scales.copy(),
+            },
+        }
+
         pcm = self.ax.pcolormesh(times, freqs, power_db, shading="gouraud", cmap="magma")
         self.ax.set_xlabel("Time (s)")
         self.ax.set_ylabel("Frequency (Hz)")
@@ -289,33 +340,83 @@ class TimeFreqPanel(QWidget):
         for label in self._cbar.ax.get_yticklabels():
             label.set_color("#cdd6f4")
 
+    def _on_save_result(self):
+        if self._last_result is None:
+            return
+        res = self._last_result
+        ch_idx = self.ch_combo.currentData()
+        ch_name = self.ch_combo.currentText()
+        data = {
+            "type": res["type"],
+            "times": res["times"],
+            "freqs": res["freqs"],
+            "power_db": res["power_db"],
+            "channel": ch_name,
+        }
+        params = {
+            "params": res["params"],
+            "range": str(self._analysis_range) if self._analysis_range else "full",
+        }
+        mode = "STFT" if res["type"] == "stft" else "Wavelet"
+        self.save_result_requested.emit(data, params, f"{mode} {ch_name}")
+
+    def restore_result(self, result: AnalysisResult):
+        d = result.data
+        rtype = d.get("type", "stft")
+        times = np.array(d.get("times", []))
+        freqs = np.array(d.get("freqs", []))
+        power_db = np.array(d.get("power_db", []))
+        self._last_result = {
+            "type": rtype,
+            "times": times,
+            "freqs": freqs,
+            "power_db": power_db,
+            "params": d.get("params", {}),
+        }
+        self.ax.clear()
+        if self._cbar is not None:
+            try:
+                self._cbar.remove()
+            except Exception:
+                pass
+            self._cbar = None
+        cmap = "viridis" if rtype == "stft" else "magma"
+        pcm = self.ax.pcolormesh(times, freqs, power_db, shading="gouraud", cmap=cmap)
+        self.ax.set_xlabel("Time (s)")
+        self.ax.set_ylabel("Frequency (Hz)")
+        self.ax.set_title("STFT Spectrogram" if rtype == "stft" else "Wavelet Scalogram")
+        self._cbar = self.figure.colorbar(pcm, ax=self.ax, pad=0.02)
+        self._cbar.set_label("Power (dB)", color="#cdd6f4")
+        self._cbar.ax.yaxis.set_tick_params(color="#cdd6f4")
+        for label in self._cbar.ax.get_yticklabels():
+            label.set_color("#cdd6f4")
+        self._style_ax()
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+
     def export_csv_data(self):
-        if self.audio_data is None:
-            raise ValueError("No data loaded")
-        ax = self.ax
-        if not ax.collections:
-            raise ValueError("No time-frequency data computed yet")
-        pcm = ax.collections[0]
-        data = pcm.get_array()
-        if data is None:
-            raise ValueError("No data in plot")
-        x_edges = pcm.get_coordinates()[:, 0]
-        y_edges = pcm.get_coordinates()[:, 1]
-        times = np.unique(x_edges)
-        freqs = np.unique(y_edges)
-        nt = len(times) - 1
-        nf = len(freqs) - 1
-        if nt < 1 or nf < 1:
-            raise ValueError("Insufficient data")
-        power_db = data[:nt * nf].reshape(nf, nt)
-        t_centers = (times[:-1] + times[1:]) / 2.0
-        f_centers = (freqs[:-1] + freqs[1:]) / 2.0
-        t_col = np.repeat(t_centers, nf)
-        f_col = np.tile(f_centers, nt)
+        if self._last_result is None:
+            raise ValueError("No time-frequency data computed yet. Wait for the analysis to finish first.")
+        res = self._last_result
+        times = res["times"]
+        freqs = res["freqs"]
+        power_db = res["power_db"]
+        nf, nt = power_db.shape
+        t_col = np.repeat(times, nf)
+        f_col = np.tile(freqs, nt)
         p_col = power_db.flatten()
-        headers = ["Time(s)", "Frequency(Hz)", "Power(dB)"]
-        arrays = [t_col, f_col, p_col]
-        return arrays, headers
+        if res["type"] == "stft":
+            w = res["params"]["window"]
+            headers = ["Time(s)", "Frequency(Hz)", "Power(dB)", f"STFT_window={w}"]
+            flag_col = np.ones_like(p_col)
+        else:
+            wv = res["params"]["wavelet"]
+            headers = ["Time(s)", "Frequency(Hz)", "Power(dB)", f"Wavelet={wv}"]
+            flag_col = np.ones_like(p_col) * 2
+        return [t_col, f_col, p_col, flag_col], headers
+
+    def get_last_result(self):
+        return self._last_result
 
     def get_figure(self):
         return self.figure

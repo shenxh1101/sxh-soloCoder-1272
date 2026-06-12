@@ -1,11 +1,13 @@
 import os
 import numpy as np
 from PyQt6.QtWidgets import (
-    QMainWindow, QTabWidget, QFileDialog, QMessageBox,
-    QStatusBar, QToolBar, QLabel, QWidget, QVBoxLayout,
+    QMainWindow, QTabWidget, QFileDialog, QMessageBox, QInputDialog,
+    QStatusBar, QToolBar, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
+    QListWidget, QListWidgetItem, QPushButton, QSplitter, QDoubleSpinBox,
+    QFrame,
 )
 from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from audio_engine import AudioData, AudioFileLoader, MicrophoneRecorder
 from waveform_panel import WaveformPanel
@@ -14,6 +16,7 @@ from filter_panel import FilterPanel
 from timefreq_panel import TimeFreqPanel
 from synthesis_panel import SynthesisPanel
 from analysis_panel import AnalysisPanel
+from results_manager import ResultsManager, AnalysisResult
 from export_utils import export_figure_to_png, export_data_to_csv
 
 
@@ -111,24 +114,35 @@ QFileDialog {
 
 
 class MainWindow(QMainWindow):
+    analysis_range_changed = pyqtSignal(float, float)
+
     def __init__(self):
         super().__init__()
         self._audio_data = None
         self._file_loader = None
         self._mic_recorder = None
+        self._results_manager = ResultsManager()
+        self._analysis_range = (0.0, 0.0)
         self._live_preview_timer = QTimer(self)
         self._live_preview_timer.setInterval(200)
         self._live_preview_timer.timeout.connect(self._on_live_preview_tick)
         self._setup_ui()
         self._setup_menu()
         self._setup_toolbar()
+        self._setup_range_toolbar()
         self._setup_statusbar()
         self.setStyleSheet(DARK_STYLE)
         self.setWindowTitle("Signal Processing & Spectrum Analysis Workbench")
-        self.setMinimumSize(1200, 800)
-        self.resize(1400, 900)
+        self.setMinimumSize(1400, 900)
+        self.resize(1700, 1000)
 
     def _setup_ui(self):
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        self._sidebar = self._build_results_sidebar()
+        self._sidebar.setMinimumWidth(220)
+        self._sidebar.setMaximumWidth(320)
+
         self._tabs = QTabWidget()
         self._tabs.setTabPosition(QTabWidget.TabPosition.North)
         self._tabs.setDocumentMode(True)
@@ -148,8 +162,137 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._analysis_panel, "🔍 Peak / THD")
 
         self._synthesis_panel.signal_synthesized.connect(self._on_synthesized)
+        self._filter_panel.filter_applied.connect(self._on_filter_applied)
+        self._spectrum_panel.save_result_requested.connect(self._on_save_spectrum_result)
+        self._analysis_panel.save_result_requested.connect(self._on_save_analysis_result)
+        self._timefreq_panel.save_result_requested.connect(self._on_save_timefreq_result)
+        self._filter_panel.save_result_requested.connect(self._on_save_filter_result)
 
-        self.setCentralWidget(self._tabs)
+        self.analysis_range_changed.connect(self._spectrum_panel.set_analysis_range)
+        self.analysis_range_changed.connect(self._timefreq_panel.set_analysis_range)
+        self.analysis_range_changed.connect(self._analysis_panel.set_analysis_range)
+
+        self._splitter.addWidget(self._sidebar)
+        self._splitter.addWidget(self._tabs)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes([260, 1400])
+
+        self.setCentralWidget(self._splitter)
+
+    def _build_results_sidebar(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
+        w.setStyleSheet("""
+            QWidget { background-color: #252526; color: #cccccc; }
+            QPushButton {
+                background-color: #3c3c3c; color: #fff; border: 1px solid #555;
+                border-radius: 3px; padding: 4px 8px; font-size: 11px;
+            }
+            QPushButton:hover { background-color: #505050; }
+            QPushButton:pressed { background-color: #0e639c; }
+            QListWidget {
+                background-color: #1e1e1e; color: #cccccc;
+                border: 1px solid #3c3c3c; font-size: 11px;
+            }
+            QListWidget::item { padding: 3px 6px; }
+            QListWidget::item:selected { background-color: #094771; }
+            QLabel { color: #cccccc; font-weight: bold; font-size: 12px; padding: 4px 0; }
+            QFrame[class="h_line"] {
+                background-color: #3c3c3c; max-height: 1px; min-height: 1px;
+            }
+        """)
+
+        title = QLabel("📚 Analysis Results")
+        lay.addWidget(title)
+
+        btn_row = QHBoxLayout()
+        self._res_save_btn = QPushButton("💾 Save Current")
+        self._res_save_btn.clicked.connect(self._on_save_current_result)
+        btn_row.addWidget(self._res_save_btn)
+
+        self._res_del_btn = QPushButton("❌ Delete")
+        self._res_del_btn.clicked.connect(self._on_delete_result)
+        btn_row.addWidget(self._res_del_btn)
+        lay.addLayout(btn_row)
+
+        btn_row2 = QHBoxLayout()
+        self._res_load_btn = QPushButton("⬇️ Load Set")
+        self._res_load_btn.clicked.connect(self._on_load_results)
+        btn_row2.addWidget(self._res_load_btn)
+
+        self._res_store_btn = QPushButton("⬆️ Save Set")
+        self._res_store_btn.clicked.connect(self._on_store_results)
+        btn_row2.addWidget(self._res_store_btn)
+        lay.addLayout(btn_row2)
+
+        hline = QFrame()
+        hline.setProperty("class", "h_line")
+        hline.setFrameShape(QFrame.Shape.HLine)
+        hline.setFrameShadow(QFrame.Shadow.Sunken)
+        lay.addWidget(hline)
+
+        self._results_list = QListWidget()
+        self._results_list.itemDoubleClicked.connect(self._on_result_double_clicked)
+        lay.addWidget(self._results_list, stretch=1)
+
+        lay.addStretch()
+        return w
+
+    def _setup_range_toolbar(self):
+        toolbar = QToolBar("Analysis Range")
+        toolbar.setMovable(False)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
+
+        toolbar.addWidget(QLabel(" 🔍 Analysis Range:"))
+        toolbar.addWidget(QLabel("Start:"))
+        self._range_start_spin = QDoubleSpinBox()
+        self._range_start_spin.setRange(0.0, 99999.0)
+        self._range_start_spin.setValue(0.0)
+        self._range_start_spin.setSuffix(" s")
+        self._range_start_spin.setDecimals(3)
+        self._range_start_spin.setStyleSheet("""
+            QDoubleSpinBox { background-color: #2d2d2d; color: #fff;
+            border: 1px solid #555; border-radius: 3px; padding: 3px 6px; }
+        """)
+        toolbar.addWidget(self._range_start_spin)
+
+        toolbar.addWidget(QLabel("  End:"))
+        self._range_end_spin = QDoubleSpinBox()
+        self._range_end_spin.setRange(0.0, 99999.0)
+        self._range_end_spin.setValue(0.0)
+        self._range_end_spin.setSuffix(" s")
+        self._range_end_spin.setDecimals(3)
+        self._range_end_spin.setStyleSheet("""
+            QDoubleSpinBox { background-color: #2d2d2d; color: #fff;
+            border: 1px solid #555; border-radius: 3px; padding: 3px 6px; }
+        """)
+        toolbar.addWidget(self._range_end_spin)
+
+        self._apply_range_btn = QPushButton("✅ Apply Range")
+        self._apply_range_btn.setStyleSheet("""
+            QPushButton { background-color: #0e639c; color: #fff;
+            border: none; border-radius: 3px; padding: 4px 12px; margin: 0 8px; }
+            QPushButton:hover { background-color: #1177bb; }
+        """)
+        self._apply_range_btn.clicked.connect(self._on_apply_range)
+        toolbar.addWidget(self._apply_range_btn)
+
+        self._reset_range_btn = QPushButton("🔄 Full Signal")
+        self._reset_range_btn.setStyleSheet("""
+            QPushButton { background-color: #555; color: #fff;
+            border: none; border-radius: 3px; padding: 4px 12px; }
+            QPushButton:hover { background-color: #666; }
+        """)
+        self._reset_range_btn.clicked.connect(self._on_reset_range)
+        toolbar.addWidget(self._reset_range_btn)
+
+        toolbar.addSeparator()
+        self._range_info_label = QLabel("No signal loaded")
+        self._range_info_label.setStyleSheet("color: #aaaaaa; font-size: 11px; margin-left: 10px;")
+        toolbar.addWidget(self._range_info_label)
 
     def _setup_menu(self):
         menubar = self.menuBar()
@@ -247,6 +390,154 @@ class MainWindow(QMainWindow):
                 f"Loaded: {name} — {audio_data.num_samples} samples, "
                 f"{audio_data.duration:.3f} s, {audio_data.sample_rate} Hz"
             )
+            self._range_start_spin.setMaximum(audio_data.duration)
+            self._range_end_spin.setMaximum(audio_data.duration)
+            self._range_start_spin.setValue(0.0)
+            self._range_end_spin.setValue(audio_data.duration)
+            self._analysis_range = (0.0, audio_data.duration)
+            self._update_range_info()
+        else:
+            self._range_info_label.setText("No signal loaded")
+
+    def _update_range_info(self):
+        if self._audio_data is None:
+            return
+        t0, t1 = self._analysis_range
+        sr = self._audio_data.sample_rate
+        samples = int((t1 - t0) * sr)
+        self._range_info_label.setText(
+            f"Range: {t0:.3f}s - {t1:.3f}s  |  {samples:,} samples  |  {(t1-t0):.2f}s duration"
+        )
+
+    def _on_apply_range(self):
+        if self._audio_data is None:
+            QMessageBox.warning(self, "Range", "Load an audio file first.")
+            return
+        t0 = self._range_start_spin.value()
+        t1 = self._range_end_spin.value()
+        if t1 <= t0:
+            QMessageBox.warning(self, "Range", "End must be greater than Start.")
+            return
+        if t1 > self._audio_data.duration:
+            t1 = self._audio_data.duration
+            self._range_end_spin.setValue(t1)
+        self._analysis_range = (t0, t1)
+        self._update_range_info()
+        self.analysis_range_changed.emit(t0, t1)
+        self._statusbar.showMessage(f"Analysis range set to {t0:.3f}s - {t1:.3f}s")
+
+    def _on_reset_range(self):
+        if self._audio_data is None:
+            return
+        self._range_start_spin.setValue(0.0)
+        self._range_end_spin.setValue(self._audio_data.duration)
+        self._analysis_range = (0.0, self._audio_data.duration)
+        self._update_range_info()
+        self.analysis_range_changed.emit(0.0, self._audio_data.duration)
+        self._statusbar.showMessage("Analysis range reset to full signal")
+
+    def _on_filter_applied(self, audio_data):
+        self._set_audio_data(audio_data)
+        self._tabs.setCurrentIndex(0)
+        self._statusbar.showMessage("Filtered signal loaded into all panels")
+
+    def _refresh_results_list(self):
+        self._results_list.clear()
+        for r in self._results_manager.get_results():
+            label = f"[{r.result_type}] {r.name}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, r.result_id)
+            self._results_list.addItem(item)
+
+    def _on_save_current_result(self):
+        idx = self._tabs.currentIndex()
+        if idx == 1:
+            self._spectrum_panel._on_save_result()
+        elif idx == 3:
+            self._timefreq_panel._on_save_result()
+        elif idx == 5:
+            self._analysis_panel._on_save_result()
+        elif idx == 2:
+            self._filter_panel._on_save_result()
+        else:
+            QMessageBox.information(self, "Save Result", "Current tab does not support saving results.")
+
+    def _on_save_spectrum_result(self, data, params, name_suggestion):
+        self._save_result("spectrum", data, params, name_suggestion)
+
+    def _on_save_analysis_result(self, data, params, name_suggestion):
+        self._save_result("analysis", data, params, name_suggestion)
+
+    def _on_save_timefreq_result(self, data, params, name_suggestion):
+        self._save_result("timefreq", data, params, name_suggestion)
+
+    def _on_save_filter_result(self, data, params, name_suggestion):
+        self._save_result("filter", data, params, name_suggestion)
+
+    def _save_result(self, rtype, data, params, name_suggestion):
+        name, ok = QInputDialog.getText(self, "Save Result", "Result name:", text=name_suggestion)
+        if not ok or not name.strip():
+            return
+        src = self._audio_data.filename if self._audio_data else ""
+        r = self._results_manager.add_result(rtype, name.strip(), data, params, src)
+        self._refresh_results_list()
+        self._statusbar.showMessage(f"Saved result: {r.name}")
+
+    def _on_delete_result(self):
+        item = self._results_list.currentItem()
+        if item is None:
+            return
+        rid = item.data(Qt.ItemDataRole.UserRole)
+        self._results_manager.remove_result(rid)
+        self._refresh_results_list()
+
+    def _on_store_results(self):
+        if len(self._results_manager.get_results()) == 0:
+            QMessageBox.information(self, "Save Results", "No results to save.")
+            return
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save Results Set", "", "JSON Files (*.json);;All Files (*)"
+        )
+        if not filepath:
+            return
+        if not filepath.lower().endswith(".json"):
+            filepath += ".json"
+        try:
+            self._results_manager.save_to_json(filepath)
+            self._statusbar.showMessage(f"Saved results to {filepath}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save results:\n{e}")
+
+    def _on_load_results(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Load Results Set", "", "JSON Files (*.json);;All Files (*)"
+        )
+        if not filepath:
+            return
+        try:
+            self._results_manager.load_from_json(filepath)
+            self._refresh_results_list()
+            self._statusbar.showMessage(f"Loaded results from {filepath}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not load results:\n{e}")
+
+    def _on_result_double_clicked(self, item):
+        rid = item.data(Qt.ItemDataRole.UserRole)
+        r = self._results_manager.get_result(rid)
+        if r is None:
+            return
+        if r.result_type == "spectrum":
+            self._tabs.setCurrentIndex(1)
+            self._spectrum_panel.restore_result(r)
+        elif r.result_type == "timefreq":
+            self._tabs.setCurrentIndex(3)
+            self._timefreq_panel.restore_result(r)
+        elif r.result_type == "analysis":
+            self._tabs.setCurrentIndex(5)
+            self._analysis_panel.restore_result(r)
+        elif r.result_type == "filter":
+            self._tabs.setCurrentIndex(2)
+            self._filter_panel.restore_result(r)
 
     def _on_open_file(self):
         filepath, _ = QFileDialog.getOpenFileName(
