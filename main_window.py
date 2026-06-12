@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QFileDialog, QMessageBox, QInputDialog,
     QStatusBar, QToolBar, QLabel, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QSplitter, QDoubleSpinBox,
-    QFrame,
+    QFrame, QDialog, QAbstractItemView, QDialogButtonBox,
 )
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -18,6 +18,8 @@ from synthesis_panel import SynthesisPanel
 from analysis_panel import AnalysisPanel
 from results_manager import ResultsManager, AnalysisResult
 from export_utils import export_figure_to_png, export_data_to_csv
+from batch_dialog import BatchDialog
+from report_generator import save_html_report
 
 
 DARK_STYLE = """
@@ -167,6 +169,9 @@ class MainWindow(QMainWindow):
         self._analysis_panel.save_result_requested.connect(self._on_save_analysis_result)
         self._timefreq_panel.save_result_requested.connect(self._on_save_timefreq_result)
         self._filter_panel.save_result_requested.connect(self._on_save_filter_result)
+
+        self._spectrum_panel.set_results_manager(self._results_manager)
+        self._results_manager.add_callback(self._on_results_updated)
 
         self.analysis_range_changed.connect(self._spectrum_panel.set_analysis_range)
         self.analysis_range_changed.connect(self._timefreq_panel.set_analysis_range)
@@ -318,6 +323,14 @@ class MainWindow(QMainWindow):
         export_csv_action.triggered.connect(self._on_export_csv)
         file_menu.addAction(export_csv_action)
 
+        batch_action = QAction("&Batch Analysis…", self)
+        batch_action.triggered.connect(self._on_batch_analysis)
+        file_menu.addAction(batch_action)
+
+        report_action = QAction("&Export HTML Report…", self)
+        report_action.triggered.connect(self._on_export_report)
+        file_menu.addAction(report_action)
+
         file_menu.addSeparator()
 
         exit_action = QAction("E&xit", self)
@@ -361,6 +374,14 @@ class MainWindow(QMainWindow):
         csv_btn = QAction("📄 Export CSV", self)
         csv_btn.triggered.connect(self._on_export_csv)
         toolbar.addAction(csv_btn)
+
+        batch_btn = QAction("📋 Batch", self)
+        batch_btn.triggered.connect(self._on_batch_analysis)
+        toolbar.addAction(batch_btn)
+
+        report_btn = QAction("📑 Report", self)
+        report_btn.triggered.connect(self._on_export_report)
+        toolbar.addAction(report_btn)
 
         toolbar.addSeparator()
 
@@ -440,6 +461,10 @@ class MainWindow(QMainWindow):
         self._set_audio_data(audio_data)
         self._tabs.setCurrentIndex(0)
         self._statusbar.showMessage("Filtered signal loaded into all panels")
+
+    def _on_results_updated(self, results):
+        self._refresh_results_list()
+        self._spectrum_panel._refresh_saved_combos()
 
     def _refresh_results_list(self):
         self._results_list.clear()
@@ -693,6 +718,139 @@ class MainWindow(QMainWindow):
             "<p>Interactive signal processing and frequency analysis tool.</p>"
             "<p>Built with PyQt6, NumPy, SciPy, Matplotlib, PyWavelets.</p>"
         )
+
+    def _on_batch_analysis(self):
+        dlg = BatchDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        results = dlg.get_completed_results()
+        if not results:
+            return
+        count = 0
+        for res in results:
+            src = res.get("source_file", "")
+            ch_name = res.get("channel_name", "Ch 0")
+            if "spectrum" in res:
+                s = res["spectrum"]
+                data = {
+                    "view": "Magnitude",
+                    "x": s["freqs"],
+                    "y": s["magnitude_db"],
+                    "channel": ch_name,
+                }
+                self._results_manager.add_result(
+                    "spectrum", f"{os.path.basename(src)} {ch_name} Mag", data, {"source": "batch"}, src
+                )
+                count += 1
+            if "stft" in res:
+                s = res["stft"]
+                data = {
+                    "type": "stft",
+                    "times": s["times"],
+                    "freqs": s["freqs"],
+                    "power_db": s["power_db"],
+                    "channel": ch_name,
+                }
+                self._results_manager.add_result(
+                    "timefreq", f"{os.path.basename(src)} {ch_name} STFT",
+                    data, {"params": s["params"]}, src
+                )
+                count += 1
+            if "wavelet" in res:
+                s = res["wavelet"]
+                data = {
+                    "type": "wavelet",
+                    "times": s["times"],
+                    "freqs": s["freqs"],
+                    "power_db": s["power_db"],
+                    "channel": ch_name,
+                }
+                self._results_manager.add_result(
+                    "timefreq", f"{os.path.basename(src)} {ch_name} Wavelet",
+                    data, {"params": s["params"]}, src
+                )
+                count += 1
+            if "thd" in res:
+                s = res["thd"]
+                peaks = []
+                for i in range(min(len(s["peak_freqs"]), len(s["peak_mags"]))):
+                    peaks.append({"freq": float(s["peak_freqs"][i]), "mag": float(s["peak_mags"][i])})
+                data = {
+                    "freqs": s["freqs"],
+                    "spectrum_db": s["spectrum_db"],
+                    "peak_indices": s["peak_indices"],
+                    "channel": ch_name,
+                    "peaks": peaks,
+                    "thd": f"{s['thd']:.4f}%",
+                    "thdn": f"{s['thdn']:.4f}%",
+                }
+                self._results_manager.add_result(
+                    "analysis", f"{os.path.basename(src)} {ch_name} THD",
+                    data, {"source": "batch"}, src
+                )
+                count += 1
+        self._refresh_results_list()
+        self._statusbar.showMessage(f"Batch analysis imported {count} results")
+
+    def _on_export_report(self):
+        all_results = self._results_manager.get_results()
+        if not all_results:
+            QMessageBox.information(self, "Report", "No saved results to include in the report.")
+            return
+
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+        sel_dlg = QDialog(self)
+        sel_dlg.setWindowTitle("Select Results for Report")
+        sel_dlg.setMinimumWidth(400)
+        sel_dlg.setMinimumHeight(400)
+        sel_dlg.setStyleSheet("""
+            QDialog { background-color: #252526; color: #cccccc; }
+            QListWidget { background-color: #1e1e1e; color: #cccccc;
+                         border: 1px solid #3c3c3c; }
+            QListWidget::item { padding: 3px 6px; }
+            QListWidget::item:selected { background-color: #094771; }
+            QLabel { color: #cccccc; }
+            QPushButton { background-color: #3c3c3c; color: white;
+                          border: 1px solid #555; border-radius: 3px; padding: 6px 14px; }
+            QPushButton:hover { background-color: #505050; }
+        """)
+        lay = QVBoxLayout(sel_dlg)
+        lay.addWidget(QLabel("Select results to include (Ctrl/Shift for multi-select):"))
+        lw = QListWidget()
+        lw.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        for r in all_results:
+            it = QListWidgetItem(f"[{r.result_type}] {r.name}")
+            it.setData(Qt.ItemDataRole.UserRole, r.result_id)
+            lw.addItem(it)
+            it.setSelected(True)
+        lay.addWidget(lw, stretch=1)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(sel_dlg.accept)
+        btns.rejected.connect(sel_dlg.reject)
+        lay.addWidget(btns)
+        if sel_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected_ids = [it.data(Qt.ItemDataRole.UserRole) for it in lw.selectedItems()]
+        selected_results = [self._results_manager.get_result(rid) for rid in selected_ids]
+        selected_results = [r for r in selected_results if r is not None]
+        if not selected_results:
+            QMessageBox.information(self, "Report", "No results selected.")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export HTML Report", "", "HTML Files (*.html);;All Files (*)"
+        )
+        if not filepath:
+            return
+        try:
+            save_html_report(selected_results, filepath,
+                              title="Signal Analysis Report",
+                              author="Signal Analysis Workbench")
+            self._statusbar.showMessage(f"Report exported: {filepath}")
+            QMessageBox.information(self, "Report", f"Report saved:\n{filepath}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save report:\n{e}")
 
     def closeEvent(self, event):
         if self._mic_recorder is not None and self._mic_recorder.is_recording:

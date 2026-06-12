@@ -361,6 +361,34 @@ class AnalysisPanel(QWidget):
             "peak_indices": peak_indices,
             "channel": d.get("channel", ""),
         }
+
+        if d.get("channel"):
+            idx = self.channel_combo.findText(d["channel"])
+            if idx >= 0:
+                self.channel_combo.blockSignals(True)
+                self.channel_combo.setCurrentIndex(idx)
+                self.channel_combo.blockSignals(False)
+
+        rp = result.params if result.params else {}
+        if "window" in rp:
+            idx = self.window_combo.findText(rp["window"])
+            if idx >= 0:
+                self.window_combo.blockSignals(True)
+                self.window_combo.setCurrentIndex(idx)
+                self.window_combo.blockSignals(False)
+        if "height" in rp:
+            self.height_spin.blockSignals(True)
+            self.height_spin.setValue(float(rp["height"]))
+            self.height_spin.blockSignals(False)
+        if "distance" in rp:
+            self.distance_spin.blockSignals(True)
+            self.distance_spin.setValue(int(rp["distance"]))
+            self.distance_spin.blockSignals(False)
+        if "prominence" in rp:
+            self.prominence_spin.blockSignals(True)
+            self.prominence_spin.setValue(float(rp["prominence"]))
+            self.prominence_spin.blockSignals(False)
+
         self._plot_spectrum(freqs, spectrum_db, peak_indices)
         self._fill_peak_table(freqs, spectrum_db, peak_indices)
         thd = d.get("thd", "—")

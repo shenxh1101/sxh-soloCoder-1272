@@ -4,6 +4,7 @@ from scipy.signal.windows import kaiser
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox,
     QDoubleSpinBox, QLabel, QSizePolicy, QCheckBox, QPushButton,
+    QRadioButton, QButtonGroup, QFrame,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from matplotlib.figure import Figure
@@ -81,6 +82,8 @@ class SpectrumPanel(QWidget):
         self._pending_view = None
         self._last_result = None
         self._last_result_b = None
+        self._result_a_meta = None
+        self._result_b_meta = None
         self._analysis_range = None
         self._results_manager = None
         self._setup_ui()
@@ -94,7 +97,7 @@ class SpectrumPanel(QWidget):
         controls.addWidget(QLabel("View:"))
         self._view_combo = QComboBox()
         self._view_combo.addItems(["Magnitude", "Phase", "Power Spectral Density (PSD)"])
-        self._view_combo.currentIndexChanged.connect(self._refresh)
+        self._view_combo.currentIndexChanged.connect(self._on_view_changed)
         controls.addWidget(self._view_combo)
 
         controls.addWidget(QLabel("Window:"))
@@ -121,24 +124,7 @@ class SpectrumPanel(QWidget):
         self._fft_combo.currentIndexChanged.connect(self._refresh)
         controls.addWidget(self._fft_combo)
 
-        controls.addWidget(QLabel("Channel:"))
-        self._channel_combo = QComboBox()
-        self._channel_combo.currentIndexChanged.connect(self._refresh)
-        controls.addWidget(self._channel_combo)
-
         controls.addStretch()
-
-        self._compare_cb = QCheckBox("A/B Compare")
-        self._compare_cb.stateChanged.connect(self._on_compare_toggled)
-        controls.addWidget(self._compare_cb)
-
-        self._ch_b_label = QLabel("Ch B:")
-        self._ch_b_label.setVisible(False)
-        controls.addWidget(self._ch_b_label)
-        self._channel_b_combo = QComboBox()
-        self._channel_b_combo.setVisible(False)
-        self._channel_b_combo.currentIndexChanged.connect(self._refresh)
-        controls.addWidget(self._channel_b_combo)
 
         self._save_btn = QPushButton("💾 Save")
         self._save_btn.setFixedHeight(24)
@@ -151,6 +137,83 @@ class SpectrumPanel(QWidget):
         controls.addWidget(self._save_btn)
 
         root.addLayout(controls)
+
+        # Compare section
+        compare_frame = QFrame()
+        compare_frame.setStyleSheet("""
+            QFrame { background-color: #2b2b2b; border: 1px solid #3c3c3c;
+                    border-radius: 4px; }
+            QLabel { color: #cccccc; }
+            QCheckBox { color: #cccccc; }
+            QComboBox { background-color: #2d2d2d; color: #ffffff;
+                       border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }
+            QRadioButton { color: #cccccc; }
+        """)
+        compare_layout = QVBoxLayout(compare_frame)
+        compare_layout.setContentsMargins(8, 6, 8, 6)
+        compare_layout.setSpacing(4)
+
+        row0 = QHBoxLayout()
+        self._compare_cb = QCheckBox("A/B Compare (overlay two spectra)")
+        self._compare_cb.stateChanged.connect(self._on_compare_toggled)
+        row0.addWidget(self._compare_cb)
+        row0.addStretch()
+        compare_layout.addLayout(row0)
+
+        row1 = QHBoxLayout()
+        self._mode_group = QButtonGroup(self)
+        self._mode_channel_rb = QRadioButton("Compare channels")
+        self._mode_saved_rb = QRadioButton("Compare saved results")
+        self._mode_channel_rb.setChecked(True)
+        self._mode_group.addButton(self._mode_channel_rb, 0)
+        self._mode_group.addButton(self._mode_saved_rb, 1)
+        self._mode_channel_rb.setEnabled(False)
+        self._mode_saved_rb.setEnabled(False)
+        self._mode_group.buttonClicked.connect(self._on_compare_mode_changed)
+        row1.addWidget(self._mode_channel_rb)
+        row1.addWidget(self._mode_saved_rb)
+        row1.addStretch()
+        compare_layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        self._ch_a_label = QLabel("A: Channel")
+        row2.addWidget(self._ch_a_label)
+        self._channel_combo = QComboBox()
+        self._channel_combo.setMinimumWidth(140)
+        self._channel_combo.currentIndexChanged.connect(self._refresh)
+        row2.addWidget(self._channel_combo)
+
+        self._ch_b_label = QLabel("B: Channel")
+        self._ch_b_label.setVisible(False)
+        row2.addWidget(self._ch_b_label)
+        self._channel_b_combo = QComboBox()
+        self._channel_b_combo.setMinimumWidth(140)
+        self._channel_b_combo.setVisible(False)
+        self._channel_b_combo.currentIndexChanged.connect(self._refresh)
+        row2.addWidget(self._channel_b_combo)
+
+        self._saved_a_label = QLabel("A: Saved Result")
+        self._saved_a_label.setVisible(False)
+        row2.addWidget(self._saved_a_label)
+        self._saved_a_combo = QComboBox()
+        self._saved_a_combo.setMinimumWidth(180)
+        self._saved_a_combo.setVisible(False)
+        self._saved_a_combo.currentIndexChanged.connect(self._on_saved_result_changed)
+        row2.addWidget(self._saved_a_combo)
+
+        self._saved_b_label = QLabel("B: Saved Result")
+        self._saved_b_label.setVisible(False)
+        row2.addWidget(self._saved_b_label)
+        self._saved_b_combo = QComboBox()
+        self._saved_b_combo.setMinimumWidth(180)
+        self._saved_b_combo.setVisible(False)
+        self._saved_b_combo.currentIndexChanged.connect(self._on_saved_result_changed)
+        row2.addWidget(self._saved_b_combo)
+
+        row2.addStretch()
+        compare_layout.addLayout(row2)
+
+        root.addWidget(compare_frame)
 
         self._figure = Figure(facecolor="#1e1e1e")
         self._canvas = FigureCanvasQTAgg(self._figure)
@@ -167,12 +230,29 @@ class SpectrumPanel(QWidget):
 
     def set_results_manager(self, manager):
         self._results_manager = manager
+        self._refresh_saved_combos()
+
+    def _refresh_saved_combos(self):
+        if self._results_manager is None:
+            return
+        self._saved_a_combo.blockSignals(True)
+        self._saved_b_combo.blockSignals(True)
+        self._saved_a_combo.clear()
+        self._saved_b_combo.clear()
+        results = self._results_manager.get_results("spectrum")
+        for r in results:
+            label = f"{r.name}"
+            self._saved_a_combo.addItem(label, r.result_id)
+            self._saved_b_combo.addItem(label, r.result_id)
+        self._saved_a_combo.blockSignals(False)
+        self._saved_b_combo.blockSignals(False)
 
     def set_analysis_range(self, t0, t1):
         if self._audio_data is None:
             return
         self._analysis_range = (t0, t1)
-        self._refresh()
+        if self._mode_channel_rb.isChecked():
+            self._refresh()
 
     def _get_range_signal(self, channel_idx):
         if self._audio_data is None or channel_idx < 0:
@@ -187,18 +267,99 @@ class SpectrumPanel(QWidget):
         i1 = max(i0 + 1, min(i1, len(sig)))
         return sig[i0:i1]
 
+    def _on_view_changed(self, idx):
+        if self._mode_channel_rb.isChecked():
+            self._refresh()
+        else:
+            self._on_saved_result_changed()
+
     def _on_window_changed(self, index):
         is_kaiser = self._window_combo.currentText() == "Kaiser"
         self._beta_label.setVisible(is_kaiser)
         self._beta_spin.setVisible(is_kaiser)
-        self._refresh()
+        if self._mode_channel_rb.isChecked():
+            self._refresh()
 
     def _on_compare_toggled(self, state):
         enabled = state == Qt.CheckState.Checked.value
-        self._ch_b_label.setVisible(enabled)
-        self._channel_b_combo.setVisible(enabled)
+        self._mode_channel_rb.setEnabled(enabled)
+        self._mode_saved_rb.setEnabled(enabled)
+        self._update_compare_widgets()
         self._last_result_b = None
-        self._refresh()
+        self._result_b_meta = None
+        if self._mode_channel_rb.isChecked():
+            self._refresh()
+        else:
+            self._on_saved_result_changed()
+
+    def _on_compare_mode_changed(self, btn):
+        self._update_compare_widgets()
+        self._last_result_b = None
+        self._result_b_meta = None
+        if self._mode_channel_rb.isChecked():
+            self._refresh()
+        else:
+            self._on_saved_result_changed()
+
+    def _update_compare_widgets(self):
+        compare = self._compare_cb.isChecked()
+        mode_saved = self._mode_saved_rb.isChecked()
+
+        self._ch_a_label.setVisible(not mode_saved)
+        self._channel_combo.setVisible(not mode_saved)
+        self._ch_b_label.setVisible(compare and not mode_saved)
+        self._channel_b_combo.setVisible(compare and not mode_saved)
+
+        self._saved_a_label.setVisible(mode_saved)
+        self._saved_a_combo.setVisible(mode_saved)
+        self._saved_b_label.setVisible(compare and mode_saved)
+        self._saved_b_combo.setVisible(compare and mode_saved)
+
+    def _on_saved_result_changed(self):
+        self._last_result = None
+        self._last_result_b = None
+        self._result_a_meta = None
+        self._result_b_meta = None
+
+        rid_a = self._saved_a_combo.currentData()
+        if rid_a and self._results_manager:
+            r = self._results_manager.get_result(rid_a)
+            if r:
+                d = r.data
+                view = d.get("view", "Magnitude")
+                x = np.array(d.get("x", []))
+                y = np.array(d.get("y", []))
+                self._last_result = (view, x, y)
+                self._result_a_meta = {"name": r.name, "source": r.source_file}
+
+        compare = self._compare_cb.isChecked()
+        if compare:
+            rid_b = self._saved_b_combo.currentData()
+            if rid_b and self._results_manager:
+                r = self._results_manager.get_result(rid_b)
+                if r:
+                    d = r.data
+                    view = d.get("view", "Magnitude")
+                    x = np.array(d.get("x", []))
+                    y = np.array(d.get("y", []))
+                    self._last_result_b = (view, x, y)
+                    self._result_b_meta = {"name": r.name, "source": r.source_file}
+
+        if self._last_result is not None:
+            view = self._last_result[0]
+            idx = 0
+            if view == "Magnitude":
+                idx = 0
+            elif view == "Phase":
+                idx = 1
+            else:
+                idx = 2
+            if self._view_combo.currentIndex() != idx:
+                self._view_combo.blockSignals(True)
+                self._view_combo.setCurrentIndex(idx)
+                self._view_combo.blockSignals(False)
+
+        self._plot_current()
 
     def _get_window(self, n):
         name = self._window_combo.currentText()
@@ -233,9 +394,13 @@ class SpectrumPanel(QWidget):
         self._channel_b_combo.blockSignals(False)
         self._last_result = None
         self._last_result_b = None
+        self._refresh_saved_combos()
         self._refresh()
 
     def _refresh(self):
+        if self._mode_saved_rb.isChecked():
+            self._on_saved_result_changed()
+            return
         if self._audio_data is None:
             return
         ch_a = self._channel_combo.currentIndex()
@@ -271,19 +436,23 @@ class SpectrumPanel(QWidget):
             self._worker_b.wait(100)
 
         self._pending_count = 2 if compare else 1
+        self._result_a_meta = {"name": f"Ch {self._channel_combo.currentText()}"}
         self._worker = SpectrumWorker(sig_a, sr, window_name, beta, nfft, view, label="A")
         self._worker.result_ready.connect(self._on_result_ready)
         self._worker.start()
 
-        if compare and ch_b >= 0 and ch_b != ch_a:
+        if compare and ch_b >= 0:
             signal_b = self._get_range_signal(ch_b)
             if signal_b is not None:
                 sig_b, n_b = prepare(signal_b)
+                self._result_b_meta = {"name": f"Ch {self._channel_b_combo.currentText()}"}
                 self._worker_b = SpectrumWorker(sig_b, sr, window_name, beta, nfft, view, label="B")
                 self._worker_b.result_ready.connect(self._on_result_ready)
                 self._worker_b.start()
             else:
                 self._pending_count = 1
+        elif compare:
+            self._pending_count = 1
 
     def _show_computing(self, show):
         if show:
@@ -320,13 +489,17 @@ class SpectrumPanel(QWidget):
         compare = self._compare_cb.isChecked()
 
         if self._last_result is not None:
-            _, xa, ya = self._last_result
-            label_a = f"Ch {self._channel_combo.currentText()}"
+            v_a, xa, ya = self._last_result
+            if view == "PSD" and v_a == "Power Spectral Density (PSD)":
+                v_display = v_a
+            else:
+                v_display = view
+            label_a = self._result_a_meta["name"] if self._result_a_meta else "A"
             ax.plot(xa, ya, color="#00ccff", linewidth=0.8, label=label_a)
 
         if compare and self._last_result_b is not None:
-            _, xb, yb = self._last_result_b
-            label_b = f"Ch {self._channel_b_combo.currentText()}"
+            v_b, xb, yb = self._last_result_b
+            label_b = self._result_b_meta["name"] if self._result_b_meta else "B"
             ax.plot(xb, yb, color="#ff6b6b", linewidth=0.8, label=label_b, alpha=0.85)
             ax.legend(facecolor="#2b2b2b", edgecolor="#555555", labelcolor="#cccccc", fontsize=9)
 
@@ -351,7 +524,8 @@ class SpectrumPanel(QWidget):
         if self._last_result is None:
             return
         view, x, y = self._last_result
-        ch = self._channel_combo.currentText()
+        ch = self._channel_combo.currentText() if self._mode_channel_rb.isChecked() else (
+            self._result_a_meta["name"] if self._result_a_meta else "Saved")
         rng = self._analysis_range if self._analysis_range else "full"
         data = {
             "view": view,
@@ -371,9 +545,33 @@ class SpectrumPanel(QWidget):
         view = d.get("view", "Magnitude")
         x = np.array(d.get("x", []))
         y = np.array(d.get("y", []))
+
+        idx = 0
+        if view == "Magnitude":
+            idx = 0
+        elif view == "Phase":
+            idx = 1
+        else:
+            idx = 2
+        self._view_combo.blockSignals(True)
+        self._view_combo.setCurrentIndex(idx)
+        self._view_combo.blockSignals(False)
+
+        if d.get("window"):
+            widx = self._window_combo.findText(d["window"])
+            if widx >= 0:
+                self._window_combo.blockSignals(True)
+                self._window_combo.setCurrentIndex(widx)
+                self._window_combo.blockSignals(False)
+
         self._last_result = (view, x, y)
         self._last_result_b = None
+        self._result_a_meta = {"name": result.name, "source": result.source_file}
+        self._result_b_meta = None
+        self._compare_cb.blockSignals(True)
         self._compare_cb.setChecked(False)
+        self._compare_cb.blockSignals(False)
+        self._update_compare_widgets()
         self._plot_current()
 
     def export_csv_data(self):
@@ -381,29 +579,38 @@ class SpectrumPanel(QWidget):
             raise ValueError("No spectrum computed yet. Wait for the analysis to finish first.")
         compare = self._compare_cb.isChecked() and self._last_result_b is not None
 
-        view, xa, ya = self._last_result
-        headers = ["Frequency(Hz)"]
-        arrays = [xa]
+        view_a, xa, ya = self._last_result
+        view_b, xb, yb = None, None, None
+        if compare:
+            view_b, xb, yb = self._last_result_b
 
-        ylabel_a = f"Magnitude(dB)_A" if view == "Magnitude" else (
-            f"Phase(rad)_A" if view == "Phase" else "PSD(dB/Hz)_A")
-        headers.append(ylabel_a)
-        arrays.append(ya)
+        def ylabel(view, tag):
+            if view == "Magnitude":
+                return f"Magnitude(dB)_{tag}"
+            elif view == "Phase":
+                return f"Phase(rad)_{tag}"
+            else:
+                return f"PSD(dB/Hz)_{tag}"
+
+        def label_name(meta, tag):
+            if meta and meta.get("name"):
+                return meta["name"]
+            return tag
+
+        label_a = label_name(self._result_a_meta, "A")
+        headers = [f"Frequency(Hz)_A_{label_a}", ylabel(view_a, f"A_{label_a}")]
+        arrays = [xa, ya]
 
         if compare:
-            _, xb, yb = self._last_result_b
-            ylabel_b = f"Magnitude(dB)_B" if view == "Magnitude" else (
-                f"Phase(rad)_B" if view == "Phase" else "PSD(dB/Hz)_B")
-            if len(xb) == len(xa) and np.allclose(xb, xa):
-                headers.append(ylabel_b)
-                arrays.append(yb)
-            else:
-                headers.append(f"Frequency(Hz)_B")
-                headers.append(ylabel_b)
-                xb_pad = np.pad(xb, (0, max(0, len(xa) - len(xb))), constant_values=np.nan)
-                yb_pad = np.pad(yb, (0, max(0, len(xa) - len(yb))), constant_values=np.nan)
-                arrays.append(xb_pad)
-                arrays.append(yb_pad)
+            label_b = label_name(self._result_b_meta, "B")
+            headers.append(f"Frequency(Hz)_B_{label_b}")
+            headers.append(ylabel(view_b if view_b else view_a, f"B_{label_b}"))
+            max_len = max(len(xa), len(xb))
+            xa_pad = np.pad(xa, (0, max_len - len(xa)), constant_values=np.nan)
+            ya_pad = np.pad(ya, (0, max_len - len(ya)), constant_values=np.nan)
+            xb_pad = np.pad(xb, (0, max_len - len(xb)), constant_values=np.nan)
+            yb_pad = np.pad(yb, (0, max_len - len(yb)), constant_values=np.nan)
+            arrays = [xa_pad, ya_pad, xb_pad, yb_pad]
 
         return arrays, headers
 

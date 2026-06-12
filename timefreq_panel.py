@@ -373,6 +373,57 @@ class TimeFreqPanel(QWidget):
             "power_db": power_db,
             "params": d.get("params", {}),
         }
+
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.setCurrentIndex(0 if rtype == "stft" else 1)
+        self.mode_combo.blockSignals(False)
+        self.stft_box.setVisible(rtype == "stft")
+        self.wavelet_box.setVisible(rtype != "stft")
+
+        if d.get("channel"):
+            idx = self.ch_combo.findText(d["channel"])
+            if idx >= 0:
+                self.ch_combo.blockSignals(True)
+                self.ch_combo.setCurrentIndex(idx)
+                self.ch_combo.blockSignals(False)
+
+        params = d.get("params", {})
+        if rtype == "stft":
+            if "nperseg" in params:
+                idx = self.win_size_combo.findText(str(params["nperseg"]))
+                if idx >= 0:
+                    self.win_size_combo.blockSignals(True)
+                    self.win_size_combo.setCurrentIndex(idx)
+                    self.win_size_combo.blockSignals(False)
+            if "noverlap" in params and "nperseg" in params and params["nperseg"] > 0:
+                pct = int(params["noverlap"] / params["nperseg"] * 100)
+                self.overlap_spin.blockSignals(True)
+                self.overlap_spin.setValue(pct)
+                self.overlap_spin.blockSignals(False)
+            if "window" in params:
+                wmap = {"hann": "Hanning", "hamming": "Hamming", "blackman": "Blackman"}
+                wname = wmap.get(params["window"], "Hanning")
+                idx = self.win_func_combo.findText(wname)
+                if idx >= 0:
+                    self.win_func_combo.blockSignals(True)
+                    self.win_func_combo.setCurrentIndex(idx)
+                    self.win_func_combo.blockSignals(False)
+        else:
+            if "wavelet" in params:
+                idx = self.wav_family_combo.findText(params["wavelet"])
+                if idx >= 0:
+                    self.wav_family_combo.blockSignals(True)
+                    self.wav_family_combo.setCurrentIndex(idx)
+                    self.wav_family_combo.blockSignals(False)
+            if "scales" in params and len(params["scales"]) >= 2:
+                s = np.array(params["scales"])
+                self.scale_min_spin.blockSignals(True)
+                self.scale_max_spin.blockSignals(True)
+                self.scale_min_spin.setValue(int(s.min()))
+                self.scale_max_spin.setValue(int(s.max()))
+                self.scale_min_spin.blockSignals(False)
+                self.scale_max_spin.blockSignals(False)
+
         self.ax.clear()
         if self._cbar is not None:
             try:
@@ -402,18 +453,27 @@ class TimeFreqPanel(QWidget):
         freqs = res["freqs"]
         power_db = res["power_db"]
         nf, nt = power_db.shape
+
+        if res["type"] == "stft":
+            w = res["params"]["window"]
+            header_row1 = ["# Type: STFT Spectrogram",
+                           f"# Window: {w}",
+                           f"# Shape: Freqs={nf} x Times={nt}",
+                           "# Format: Each row = [Time(s), Freq(Hz), Power(dB)]"]
+            headers = ["Time(s)", "Frequency(Hz)", "Power(dB)"]
+        else:
+            wv = res["params"]["wavelet"]
+            header_row1 = ["# Type: Wavelet Scalogram",
+                           f"# Wavelet: {wv}",
+                           f"# Shape: Freqs={nf} x Times={nt}",
+                           "# Format: Each row = [Time(s), Freq(Hz), Power(dB)]"]
+            headers = ["Time(s)", "Frequency(Hz)", "Power(dB)"]
+
         t_col = np.repeat(times, nf)
         f_col = np.tile(freqs, nt)
         p_col = power_db.flatten()
-        if res["type"] == "stft":
-            w = res["params"]["window"]
-            headers = ["Time(s)", "Frequency(Hz)", "Power(dB)", f"STFT_window={w}"]
-            flag_col = np.ones_like(p_col)
-        else:
-            wv = res["params"]["wavelet"]
-            headers = ["Time(s)", "Frequency(Hz)", "Power(dB)", f"Wavelet={wv}"]
-            flag_col = np.ones_like(p_col) * 2
-        return [t_col, f_col, p_col, flag_col], headers
+
+        return [t_col, f_col, p_col], headers
 
     def get_last_result(self):
         return self._last_result
