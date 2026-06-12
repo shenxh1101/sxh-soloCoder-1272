@@ -352,9 +352,9 @@ class TimeFreqPanel(QWidget):
             "freqs": res["freqs"],
             "power_db": res["power_db"],
             "channel": ch_name,
+            "params": res["params"].copy(),
         }
         params = {
-            "params": res["params"],
             "range": str(self._analysis_range) if self._analysis_range else "full",
         }
         mode = "STFT" if res["type"] == "stft" else "Wavelet"
@@ -454,23 +454,18 @@ class TimeFreqPanel(QWidget):
         power_db = res["power_db"]
         nf, nt = power_db.shape
 
+        extra_header = ""
         if res["type"] == "stft":
             w = res["params"]["window"]
-            header_row1 = ["# Type: STFT Spectrogram",
-                           f"# Window: {w}",
-                           f"# Shape: Freqs={nf} x Times={nt}",
-                           "# Format: Each row = [Time(s), Freq(Hz), Power(dB)]"]
+            extra_header = f"STFT (window={w}, nperseg={res['params'].get('nperseg','?')})"
             headers = ["Time(s)", "Frequency(Hz)", "Power(dB)"]
         else:
             wv = res["params"]["wavelet"]
-            header_row1 = ["# Type: Wavelet Scalogram",
-                           f"# Wavelet: {wv}",
-                           f"# Shape: Freqs={nf} x Times={nt}",
-                           "# Format: Each row = [Time(s), Freq(Hz), Power(dB)]"]
+            extra_header = f"Wavelet Scalogram (wavelet={wv})"
             headers = ["Time(s)", "Frequency(Hz)", "Power(dB)"]
 
-        t_col = np.repeat(times, nf)
-        f_col = np.tile(freqs, nt)
+        f_col = np.repeat(freqs, nt)
+        t_col = np.tile(times, nf)
         p_col = power_db.flatten()
 
         return [t_col, f_col, p_col], headers

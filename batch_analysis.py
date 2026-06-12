@@ -59,8 +59,8 @@ class BatchWorker(QThread):
     def _load(self, task: BatchTask) -> AudioData:
         loader = AudioFileLoader(task.filepath)
         loader.run()
-        if loader.error:
-            raise RuntimeError(loader.error)
+        if loader.last_error:
+            raise RuntimeError(loader.last_error)
         if loader.audio_data is None:
             raise RuntimeError("No audio data loaded")
         return loader.audio_data
@@ -105,7 +105,9 @@ class BatchWorker(QThread):
         while nfft < len(s):
             nfft <<= 1
         w = sigwin.hann(len(s))
-        fft = np.abs(rfft(s * w)) * 2.0 / np.sum(w)
+        padded = np.zeros(nfft)
+        padded[:len(s)] = s * w
+        fft = np.abs(rfft(padded)) * 2.0 / np.sum(w)
         freqs = rfftfreq(nfft, d=1.0 / sr)
         step = max(1, len(freqs) // 8000)
         return {
@@ -131,6 +133,10 @@ class BatchWorker(QThread):
         wavelet = "cmor1.5-1.0"
         max_s = min(len(sig), sr * 5)
         s_use = sig[:max_s]
+        target_nt = 500
+        if len(s_use) > target_nt:
+            step = len(s_use) // target_nt
+            s_use = s_use[::step]
         coeffs, freqs = pywt.cwt(s_use, scales, wavelet, 1.0 / sr)
         power_db = 10.0 * np.log10(np.abs(coeffs) ** 2 + 1e-12)
         duration = len(s_use) / sr

@@ -10,7 +10,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from results_manager import AnalysisResult
 
 
-def _fig_to_png_base64(fig: Figure, dpi: int = 110) -> str:
+def _fig_to_png_base64(fig: Figure) -> str:
     canvas = FigureCanvasAgg(fig)
     buf = io.BytesIO()
     fig.patch.set_facecolor("white")
@@ -22,19 +22,20 @@ def _fig_to_png_base64(fig: Figure, dpi: int = 110) -> str:
         ax.title.set_color("black")
         for spine in ax.spines.values():
             spine.set_color("#333333")
-    canvas.print_png(buf, dpi=dpi)
+    canvas.print_png(buf)
     data = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/png;base64,{data}"
 
 
 def _build_spectrum_fig(r: AnalysisResult) -> Figure:
-    fig = Figure(figsize=(9, 4), dpi=100, facecolor="white")
+    fig = Figure(figsize=(9, 4), dpi=110, facecolor="white")
     ax = fig.add_subplot(111)
     d = r.data
     x = np.array(d.get("x", []))
     y = np.array(d.get("y", []))
     view = d.get("view", "Magnitude")
-    ax.plot(x, y, color="#1e6fba", linewidth=0.9)
+    if len(x) > 0 and len(y) > 0:
+        ax.plot(x, y, color="#1e6fba", linewidth=0.9)
     ax.set_xlabel("Frequency (Hz)")
     if view == "Magnitude":
         ax.set_ylabel("Magnitude (dB)")
@@ -51,7 +52,7 @@ def _build_spectrum_fig(r: AnalysisResult) -> Figure:
 
 
 def _build_timefreq_fig(r: AnalysisResult) -> Figure:
-    fig = Figure(figsize=(9, 4), dpi=100, facecolor="white")
+    fig = Figure(figsize=(9, 4), dpi=110, facecolor="white")
     ax = fig.add_subplot(111)
     d = r.data
     rtype = d.get("type", "stft")
@@ -59,29 +60,41 @@ def _build_timefreq_fig(r: AnalysisResult) -> Figure:
     freqs = np.array(d.get("freqs", []))
     power_db = np.array(d.get("power_db", []))
     cmap = "viridis" if rtype == "stft" else "magma"
-    pcm = ax.pcolormesh(times, freqs, power_db, shading="gouraud", cmap=cmap)
+    if len(times) > 0 and len(freqs) > 0 and power_db.ndim == 2:
+        nf, nt = power_db.shape
+        max_nt = 800
+        max_nf = 800
+        if nt > max_nt or nf > max_nf:
+            t_step = max(1, nt // max_nt)
+            f_step = max(1, nf // max_nf)
+            times = times[::t_step]
+            freqs = freqs[::f_step]
+            power_db = power_db[::f_step, ::t_step]
+        pcm = ax.pcolormesh(times, freqs, power_db, shading="gouraud", cmap=cmap)
+        cbar = fig.colorbar(pcm, ax=ax, pad=0.02)
+        cbar.set_label("Power (dB)")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Frequency (Hz)")
     ax.set_title("STFT Spectrogram" if rtype == "stft" else "Wavelet Scalogram")
-    cbar = fig.colorbar(pcm, ax=ax, pad=0.02)
-    cbar.set_label("Power (dB)")
     fig.tight_layout()
     return fig
 
 
 def _build_filter_fig(r: AnalysisResult) -> Figure:
-    fig = Figure(figsize=(9, 5), dpi=100, facecolor="white")
+    fig = Figure(figsize=(9, 5), dpi=110, facecolor="white")
     ax_mag = fig.add_subplot(211)
     ax_phase = fig.add_subplot(212)
     d = r.data
     freqs = np.array(d.get("freqs", []))
     mag_db = np.array(d.get("mag_db", []))
     phase = np.array(d.get("phase", []))
-    ax_mag.plot(freqs, mag_db, color="#1e6fba", linewidth=1.0)
+    if len(freqs) > 0 and len(mag_db) > 0:
+        ax_mag.plot(freqs, mag_db, color="#1e6fba", linewidth=1.0)
     ax_mag.set_title("Frequency Response (Magnitude)")
     ax_mag.set_ylabel("Magnitude (dB)")
     ax_mag.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-    ax_phase.plot(freqs, phase, color="#c44e00", linewidth=1.0)
+    if len(freqs) > 0 and len(phase) > 0:
+        ax_phase.plot(freqs, phase, color="#c44e00", linewidth=1.0)
     ax_phase.set_title("Phase Response")
     ax_phase.set_xlabel("Frequency (Hz)")
     ax_phase.set_ylabel("Phase (rad)")
@@ -91,15 +104,17 @@ def _build_filter_fig(r: AnalysisResult) -> Figure:
 
 
 def _build_analysis_fig(r: AnalysisResult) -> Figure:
-    fig = Figure(figsize=(9, 4), dpi=100, facecolor="white")
+    fig = Figure(figsize=(9, 4), dpi=110, facecolor="white")
     ax = fig.add_subplot(111)
     d = r.data
     freqs = np.array(d.get("freqs", []))
     spectrum_db = np.array(d.get("spectrum_db", []))
     peak_indices = np.array(d.get("peak_indices", [])).astype(int)
-    ax.plot(freqs, spectrum_db, color="#1e6fba", linewidth=0.7, alpha=0.8)
-    if len(peak_indices) > 0:
-        ax.plot(freqs[peak_indices], spectrum_db[peak_indices], "rx", markersize=5)
+    if len(freqs) > 0 and len(spectrum_db) > 0:
+        ax.plot(freqs, spectrum_db, color="#1e6fba", linewidth=0.7, alpha=0.8)
+        if len(peak_indices) > 0:
+            peak_indices = np.clip(peak_indices, 0, len(freqs) - 1)
+            ax.plot(freqs[peak_indices], spectrum_db[peak_indices], "rx", markersize=5)
     ax.set_xlabel("Frequency (Hz)")
     ax.set_ylabel("Magnitude (dB)")
     ax.set_title("Peak Detection")

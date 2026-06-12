@@ -49,6 +49,8 @@ class AudioFileLoader(QThread):
     def __init__(self, filepath):
         super().__init__()
         self.filepath = filepath
+        self.last_error: str = ""
+        self.audio_data: AudioData | None = None
 
     def run(self):
         try:
@@ -62,8 +64,10 @@ class AudioFileLoader(QThread):
                 ch_names[1] = "Right"
             audio = AudioData(signal=signal, sample_rate=sr,
                               channel_names=ch_names, filename=self.filepath)
+            self.audio_data = audio
             self.loaded.emit(audio)
         except Exception as e:
+            self.last_error = str(e)
             self.error.emit(str(e))
 
 
